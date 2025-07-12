@@ -3,7 +3,7 @@ from flask_cors import CORS
 import uuid
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta # NOVO: Importado timedelta
 import urllib.parse
 import json
 import sqlite3
@@ -28,7 +28,7 @@ app = Flask(__name__)
 CORS(app)
 
 # --- Configuração do Banco de Dados SQLite para o Backend ---
-DATABASE = 'backend_sessions.db'
+DATABASE = 'backend_sessions.db' # MUDADO: Nome do DB para consistência
 
 def init_db_backend():
     conn = sqlite3.connect(DATABASE, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
@@ -40,6 +40,13 @@ def init_db_backend():
             browser_data TEXT, -- Armazenar como JSON string
             server_data TEXT,  -- Armazenar como JSON string
             tracking_data TEXT -- Armazenar como JSON string
+        )
+    ''')
+    # NOVO: Tabela para heartbeats do bot
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS bot_heartbeats (
+            bot_id TEXT PRIMARY KEY,
+            last_heartbeat TIMESTAMP
         )
     ''')
     conn.commit()
@@ -174,6 +181,56 @@ def get_session(session_id):
         return jsonify({'error': 'Erro interno do servidor'}), 500
     finally:
         conn.close()
+
+# NOVO: Endpoint para o bot enviar o heartbeat
+@app.route('/api/bot-heartbeat', methods=['POST'])
+def bot_heartbeat():
+    try:
+        data = request.get_json()
+        bot_id = data.get('bot_id')
+        if not bot_id:
+            return jsonify({'error': 'bot_id é necessário'}), 400
+
+        conn = sqlite3.connect(DATABASE, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
+        cursor = conn.cursor()
+        
+        # Atualiza ou insere o último heartbeat
+        cursor.execute(
+            "INSERT OR REPLACE INTO bot_heartbeats (bot_id, last_heartbeat) VALUES (?, ?)",
+            (bot_id, datetime.now())
+        )
+        conn.commit()
+        conn.close()
+        logging.info(f"Backend: Heartbeat recebido para bot_id: {bot_id}")
+        return jsonify({'status': 'ok'}), 200
+    except Exception as e:
+        logging.exception(f"Backend: Erro ao receber heartbeat para bot_id: {bot_id}.")
+        return jsonify({'error': 'Erro interno do servidor'}), 500
+
+# NOVO: Endpoint para o site consultar o status do bot
+@app.route('/api/bot-status/<bot_id>', methods=['GET'])
+def get_bot_status(bot_id):
+    try:
+        conn = sqlite3.connect(DATABASE, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT last_heartbeat FROM bot_heartbeats WHERE bot_id = ?", (bot_id,))
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            logging.warning(f"Backend: Status do bot não encontrado para bot_id: {bot_id}.")
+            return jsonify({'active': False, 'message': 'Bot não registrado ou inativo.'}), 200
+        
+        last_heartbeat = row[0]
+        # Considere o bot ativo se o último heartbeat foi nos últimos 60 segundos
+        is_active = (datetime.now() - last_heartbeat) < timedelta(seconds=60)
+        
+        logging.info(f"Backend: Status consultado para bot_id: {bot_id}. Ativo: {is_active}")
+        return jsonify({'active': is_active, 'last_heartbeat': last_heartbeat.isoformat()}), 200
+    except Exception as e:
+        logging.exception(f"Backend: Erro ao consultar status do bot para bot_id: {bot_id}.")
+        return jsonify({'error': 'Erro interno do servidor'}), 500
 
 @app.route('/')
 def index():
