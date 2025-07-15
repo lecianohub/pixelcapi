@@ -4,7 +4,7 @@ from flask_cors import CORS
 import uuid
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone # Importar timezone
 import urllib.parse
 import json
 import sqlite3
@@ -202,9 +202,13 @@ def get_bot_status(bot_id):
             logging.warning(f"Backend: Status do bot não encontrado para bot_id: {bot_id}.")
             return jsonify({'active': False, 'message': 'Bot não registrado ou inativo.'}), 200
 
-        last_heartbeat = row[0] # last_heartbeat já é um objeto datetime graças a detect_types
+        last_heartbeat = row[0]
         
         # --- CORREÇÃO APLICADA AQUI ---
+        # Garantir que last_heartbeat seja timezone-aware (UTC) antes da comparação
+        if last_heartbeat.tzinfo is None:
+            last_heartbeat = last_heartbeat.replace(tzinfo=timezone.utc)
+            
         # O bot envia heartbeat a cada 5 minutos (300 segundos).
         # Consideramos ativo se o último heartbeat foi recebido nos últimos 6 minutos (360 segundos).
         active_threshold_seconds = 360 # Ajuste conforme a frequência de envio do seu bot + margem
