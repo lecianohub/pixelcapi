@@ -196,7 +196,7 @@ def get_bot_status(bot_id):
 
         last_heartbeat = row[0]
         # MUDANÇA: Comparação consciente de fuso horário.
-        is_active = (datetime.now(timezone.utc) - last_heartbeat) < timedelta(seconds=60)
+        is_active = (datetime.now(timezone.utc) - last_heartbeat) < timedelta(seconds=360)
 
         logging.info(f"Backend: Status consultado para bot_id: {bot_id}. Ativo: {is_active}")
         return jsonify({'active': is_active, 'last_heartbeat': last_heartbeat.isoformat()}), 200
