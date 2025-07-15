@@ -1,9 +1,10 @@
+# app.py (seu arquivo principal do backend Flask)
 from flask import Flask, request, jsonify, g
 from flask_cors import CORS
 import uuid
 import logging
 import os
-from datetime import datetime, timedelta, timezone # MUDANÇA: Importado timezone
+from datetime import datetime, timedelta, timezone
 import urllib.parse
 import json
 import sqlite3
@@ -13,22 +14,27 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler("backend_log.txt", encoding="utf-8"),
-        logging.StreamHandler()
+        # logging.FileHandler("backend_log.txt", encoding="utf-8"), # Descomente para logar em arquivo (efêmero no Render)
+        logging.StreamHandler() # Envia logs para o console (visível nos logs do Render)
     ]
 )
 
 app = Flask(__name__)
-CORS(app)
+CORS(app) # Habilita CORS para todas as rotas (necessário para o seu frontend)
 
+# Nome do arquivo do banco de dados SQLite
+# ATENÇÃO: No Render Free Tier, este arquivo será efêmero (dados perdidos em restarts/deploys).
+# Para persistência real, use um banco de dados externo como PostgreSQL.
 DATABASE = 'backend_sessions.db'
 
-# MUDANÇA: Lógica otimizada de gerenciamento de conexão com o banco de dados.
+# Lógica otimizada de gerenciamento de conexão com o banco de dados.
 # A conexão é aberta por requisição e fechada automaticamente.
 def get_db():
     db = getattr(g, '_database', None)
     if db is None:
+        # Usar parse_decltypes para converter TIMESTAMP do SQLite para objetos datetime do Python
         db = g._database = sqlite3.connect(DATABASE, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
+        db.row_factory = sqlite3.Row # Retorna linhas como objetos de dicionário
     return db
 
 @app.teardown_appcontext
@@ -53,15 +59,17 @@ def init_db_backend():
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS bot_heartbeats (
                 bot_id TEXT PRIMARY KEY,
-                last_heartbeat TIMESTAMP
+                last_heartbeat TIMESTAMP -- SQLite TIMESTAMP é armazenado como string ISO 8601 por padrão
             )
         ''')
         conn.commit()
     logging.info("Backend: Banco de dados SQLite inicializado com sucesso.")
 
+# Garante que o banco de dados seja inicializado na primeira execução
 with app.app_context():
     init_db_backend()
 
+# --- Rotas de Sessão (mantidas do seu código original) ---
 @app.route('/api/create-session', methods=['POST'])
 def create_session():
     payload = request.get_json()
@@ -103,8 +111,7 @@ def create_session():
         'browserData': browser_data,
         'serverData': {
             'ipAddress': ip_address,
-            # MUDANÇA: Usando timezone UTC para padronização.
-            'timestamp': datetime.now(timezone.utc).isoformat()
+            'timestamp': datetime.now(timezone.utc).isoformat() # Usando timezone UTC para padronização.
         },
         'trackingData': tracking_data_extracted
     }
@@ -160,20 +167,21 @@ def get_session(session_id):
         logging.exception(f"get_session: Erro inesperado ao recuperar sessão {session_id}.")
         return jsonify({'error': 'Erro interno do servidor'}), 500
 
+# --- Rotas de Heartbeat do Bot (corrigidas) ---
 @app.route('/api/bot-heartbeat', methods=['POST'])
 def bot_heartbeat():
     try:
         data = request.get_json()
         bot_id = data.get('bot_id')
         if not bot_id:
+            logging.warning("Heartbeat recebido sem bot_id.")
             return jsonify({'error': 'bot_id é necessário'}), 400
 
         db = get_db()
         cursor = db.cursor()
         cursor.execute(
             "INSERT OR REPLACE INTO bot_heartbeats (bot_id, last_heartbeat) VALUES (?, ?)",
-            # MUDANÇA: Usando timezone UTC para padronização.
-            (bot_id, datetime.now(timezone.utc))
+            (bot_id, datetime.now(timezone.utc)) # Armazena o timestamp em UTC
         )
         db.commit()
         logging.info(f"Backend: Heartbeat recebido para bot_id: {bot_id}")
@@ -194,11 +202,15 @@ def get_bot_status(bot_id):
             logging.warning(f"Backend: Status do bot não encontrado para bot_id: {bot_id}.")
             return jsonify({'active': False, 'message': 'Bot não registrado ou inativo.'}), 200
 
-        last_heartbeat = row[0]
-        # MUDANÇA: Comparação consciente de fuso horário.
-        is_active = (datetime.now(timezone.utc) - last_heartbeat) < timedelta(seconds=360)
+        last_heartbeat = row[0] # last_heartbeat já é um objeto datetime graças a detect_types
+        
+        # --- CORREÇÃO APLICADA AQUI ---
+        # O bot envia heartbeat a cada 5 minutos (300 segundos).
+        # Consideramos ativo se o último heartbeat foi recebido nos últimos 6 minutos (360 segundos).
+        active_threshold_seconds = 360 # Ajuste conforme a frequência de envio do seu bot + margem
+        is_active = (datetime.now(timezone.utc) - last_heartbeat) < timedelta(seconds=active_threshold_seconds)
 
-        logging.info(f"Backend: Status consultado para bot_id: {bot_id}. Ativo: {is_active}")
+        logging.info(f"Backend: Status consultado para bot_id: {bot_id}. Ativo: {is_active} (Último heartbeat: {last_heartbeat.isoformat()})")
         return jsonify({'active': is_active, 'last_heartbeat': last_heartbeat.isoformat()}), 200
     except Exception as e:
         logging.exception(f"Backend: Erro ao consultar status do bot para bot_id: {bot_id}.")
